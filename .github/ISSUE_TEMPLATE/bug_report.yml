@@ -1,0 +1,48 @@
+name: Bug
+description: Algo no funciona como debería
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        No incluyas IDs de sesión, títulos ni rutas personales. Si hace falta un
+        ejemplo, usa datos ficticios.
+  - type: textarea
+    id: que-pasa
+    attributes:
+      label: Qué pasa
+      description: Descripción del problema.
+    validations:
+      required: true
+  - type: textarea
+    id: esperado
+    attributes:
+      label: Qué esperabas que pasara
+    validations:
+      required: true
+  - type: textarea
+    id: pasos
+    attributes:
+      label: Pasos para reproducir
+      placeholder: |
+        1. ./cleanup-sessions.sh --init-list
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versión de opencode
+      placeholder: "opencode --version"
+  - type: input
+    id: entorno
+    attributes:
+      label: Entorno
+      placeholder: "Linux, bash 5.2, python3 3.12"
+  - type: textarea
+    id: salida
+    attributes:
+      label: Salida / error
+      description: Pega la salida relevante (revisa que no haya datos personales).
+      render: shell

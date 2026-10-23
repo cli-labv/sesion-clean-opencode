@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint + tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Comprobar sintaxis
+        run: bash -n cleanup-sessions.sh tests/run-tests.sh
+
+      - name: ShellCheck
+        run: shellcheck -S warning cleanup-sessions.sh tests/run-tests.sh
+
+      - name: Tests (DB de ejemplo)
+        run: ./tests/run-tests.sh

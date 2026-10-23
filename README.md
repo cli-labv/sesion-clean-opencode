@@ -18,11 +18,6 @@ sin perder las que te importan.
 git clone https://github.com/<usuario>/session-cleanup.git
 cd session-cleanup
 chmod +x cleanup-sessions.sh
-```
-
-Copia la plantilla de la lista blanca:
-
-```bash
 cp keep-sessions.example.txt keep-sessions.txt
 ```
 
@@ -68,13 +63,41 @@ $EDITOR keep-sessions.txt
 - Borra en cascada los registros asociados (`message`, `part`, `todo`,
   `session_message`).
 
+## Ejemplo
+
+`keep-sessions.example.txt` es la plantilla de la lista blanca. Para probar el
+script sin arriesgar tu DB real:
+
+```bash
+make test
+```
+
+Los tests crean una SQLite de ejemplo con sesiones ficticias y un `opencode`
+falso en el `PATH`; verifican dry-run, borrado en cascada, modo estricto e
+idempotencia. Nunca tocan `~/.local/share/opencode/`.
+
+## Estructura
+
+```
+cleanup-sessions.sh          script principal
+keep-sessions.example.txt    plantilla de lista blanca
+tests/run-tests.sh           tests contra una DB de ejemplo
+.github/workflows/ci.yml     CI: bash -n + ShellCheck + tests
+Makefile                     make test / lint / check / clean
+```
+
 ## Seguridad
 
 - Por defecto **no borra nada**: es dry-run hasta que pasas `--apply`.
 - Cierra opencode antes de `--apply` (o al menos antes de `--vacuum`) para evitar
   bloqueos y resultados inconsistentes.
-- `keep-sessions.txt` y `backups/` están en `.gitignore`: contienen tus IDs,
-  títulos y datos personales. No los subas a git.
+- `keep-sessions.txt`, `backups/` y `*.db` están en `.gitignore`: contienen tus
+  IDs, títulos y datos personales. No los subas a git.
+
+## Contribuir
+
+Ver [CONTRIBUTING.md](CONTRIBUTING.md). Para vulnerabilidades, ver
+[SECURITY.md](SECURITY.md). Historial de cambios en [CHANGELOG.md](CHANGELOG.md).
 
 ## Licencia
 

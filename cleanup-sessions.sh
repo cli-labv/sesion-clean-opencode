@@ -157,7 +157,7 @@ py_list > "$TSV"
 
 declare -A PARENT KEEP
 
-while IFS=$'\t' read -r id title dir date parent; do
+while IFS=$'\t' read -r id _ _ _ parent; do
   [ -z "$id" ] && continue
   PARENT["$id"]="$parent"
 done < "$TSV"
