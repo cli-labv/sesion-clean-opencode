@@ -1,0 +1,10 @@
+# Lista blanca de sesiones de opencode a CONSERVAR.
+# Una sesion por linea. Las que NO aparezcan aqui se BORRARAN.
+# Para borrar una sesion, elimina su linea (o comentala con #).
+# Formato: <ses_id>   # <fecha> | <directorio> | <titulo>
+#
+# Genera tu propia lista con:
+#   ./cleanup-sessions.sh --init-list
+# (eso crea keep-sessions.txt, que esta ignorado por git)
+#
+ses_00000000000000000000000000

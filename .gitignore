@@ -1,0 +1,16 @@
+# Copias de seguridad de la base de datos (pueden ser grandes y contener datos privados)
+backups/
+*.db
+*.db-wal
+*.db-shm
+
+# Lista blanca real: contiene ids y titulos de tus sesiones
+keep-sessions.txt
+*.bak
+
+# Basura de sistema / editores
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
