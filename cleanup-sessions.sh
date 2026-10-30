@@ -1,26 +1,35 @@
 #!/usr/bin/env bash
 #
 # cleanup-sessions.sh
-# Borra sesiones de opencode conservando SOLO las de la lista blanca.
-# Versión 2: usa python3+sqlite directamente (la tabla viva es session_v2;
-# el subcomando 'opencode db' ya no existe en opencode actual).
+# Aplicación directa (no interactiva) del borrado de sesiones opencode.
+# Lee keep-sessions.txt (modo estricto) y borra todo lo que no esté listado.
+# Uso típico:
+#   ./cleanup-sessions.sh --init-list      # genera la lista blanca
+#   # edita keep-sessions.txt y deja solo lo que conservar
+#   ./cleanup-sessions.sh --apply          # borra (pide confirmar BORRAR)
+#   ./cleanup-sessions.sh --apply --yes    # borra sin preguntar
 #
-# Uso:
-#   ./cleanup-sessions.sh                 -> simulacion (dry-run), no borra nada
-#   ./cleanup-sessions.sh --apply         -> borra (pide confirmacion)
-#   ./cleanup-sessions.sh --apply --yes   -> borra sin preguntar
-#   ./cleanup-sessions.sh --init-list     -> genera/regenera keep-sessions.txt con TODAS las sesiones raiz
-#   ./cleanup-sessions.sh --apply --vacuum -> ademas compacta la DB para recuperar disco
-#
-# Reglas:
-#   - keep-sessions.txt = sesiones a CONSERVAR (whitelist).
-#   - MODO ESTRICTO: solo sobreviven las sesiones listadas literalmente.
-#     Las sub-sesiones (hijas) de una sesion conservada SE BORRAN tambien.
-#   - Antes de --apply se hace copia de seguridad consistente de la DB (sqlite backup API).
 
-set -euo pipefail
+set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Cargar módulos
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib/db.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib/term_menu.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/skills/session-list/skill.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/skills/whitelist/skill.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/skills/db-backup/skill.sh"
+
+init_colors
+
 KEEP_FILE="${KEEP_FILE:-$SCRIPT_DIR/keep-sessions.txt}"
 
 APPLY=0
@@ -30,7 +39,19 @@ DO_VACUUM=0
 INIT_LIST=0
 FORCE=0
 
-usage() { awk 'NR<3{next} /^[^#]/{exit} {sub(/^# ?/,""); print}' "$0"; exit 0; }
+usage() {
+  cat <<'EOF'
+Uso:
+  ./cleanup-sessions.sh               -> Muesta esta ayuda
+  ./cleanup-sessions.sh --init-list   -> Generar keep-sessions.txt y salir
+  ./cleanup-sessions.sh --apply       -> Borrar según keep-sessions.txt (pide confirmar)
+  ./cleanup-sessions.sh --apply --yes -> Borrar sin confirmación
+  ./cleanup-sessions.sh --vacuum      -> Compactar DB tras borrar (con --apply)
+  ./cleanup-sessions.sh --no-backup   -> No hacer backup antes de borrar (con --apply)
+  ./cleanup-sessions.sh -h|--help     -> Esta ayuda
+EOF
+  exit 0
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -41,193 +62,108 @@ while [ $# -gt 0 ]; do
     --init-list)    INIT_LIST=1 ;;
     --force)        FORCE=1 ;;
     -h|--help)      usage ;;
-    *) echo "Opcion desconocida: $1" >&2; exit 1 ;;
+    *) echo "Opción desconocida: $1" >&2; exit 1 ;;
   esac
   shift
 done
 
-command -v opencode >/dev/null 2>&1 || { echo "ERROR: 'opencode' no esta en el PATH." >&2; exit 1; }
-command -v python3  >/dev/null 2>&1 || { echo "ERROR: 'python3' no esta en el PATH." >&2; exit 1; }
+check_deps || exit 1
+DB_PATH="$(get_opencode_db)"
+[ -f "$DB_PATH" ] || { echo "${RED}ERROR:${RESET} No encuentro la base de datos: $DB_PATH" >&2; exit 1; }
 
-DB_PATH="$(opencode debug paths 2>/dev/null | awk '$1=="db"{print $2}')"
-[ -z "$DB_PATH" ] && DB_PATH="$HOME/.local/share/opencode/opencode.db"
-[ -f "$DB_PATH" ] || { echo "ERROR: no encuentro la base de datos: $DB_PATH" >&2; exit 1; }
-
-# Helper python: lista sesiones de la tabla viva (session_v2) en TSV.
-py_list() {
-  python3 - "$DB_PATH" <<'PY'
-import sqlite3, sys, time
-db = sys.argv[1]
-c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-q = """SELECT id,
-              coalesce(replace(replace(replace(title,char(9),' '),char(10),' '),char(13),' '),''),
-              directory,
-              datetime(time_created/1000,'unixepoch'),
-              coalesce(parent_id,'')
-       FROM session_v2 ORDER BY time_created DESC"""
-for r in c.execute(q):
-    print("\t".join(r))
-PY
-}
-
-# Helper python: borra por ids de la tabla viva + tablas legadas (con cascada).
-py_delete() {
-  python3 - "$DB_PATH" "$1" <<'PY'
-import sqlite3, sys
-db, ids_file = sys.argv[1], sys.argv[2]
-ids = [l.strip() for l in open(ids_file) if l.strip()]
-if not ids:
-    print("  Nada que borrar."); sys.exit(0)
-c = sqlite3.connect(db)
-c.execute("PRAGMA foreign_keys=ON")
-ph = ",".join("?" * len(ids))
-cur = c.execute("BEGIN IMMEDIATE")
-n_v2 = c.execute(f"DELETE FROM session_v2 WHERE id IN ({ph})", ids).rowcount
-n_lg = c.execute(f"DELETE FROM session WHERE id IN ({ph})", ids).rowcount
-# por si alguna FK no estaba activa en datos legados
-c.execute(f"DELETE FROM message    WHERE session_id IN ({ph})", ids)
-c.execute(f"DELETE FROM part       WHERE session_id IN ({ph})", ids)
-c.execute(f"DELETE FROM todo       WHERE session_id IN ({ph})", ids)
-c.execute(f"DELETE FROM session_message WHERE session_id IN ({ph})", ids)
-c.commit()
-resto = c.execute("SELECT count(*) FROM session_v2").fetchone()[0]
-print(f"  Borradas: {n_v2} sesiones (v2) / {n_lg} (legado). Quedan {resto} en session_v2.")
-PY
-}
-
-py_vacuum() {
-  python3 - "$DB_PATH" <<'PY'
-import sqlite3, sys, os
-db = sys.argv[1]
-for suf in ("-wal", "-shm"):
-    p = db + suf
-    if os.path.exists(p):
-        print(f"  aviso: {p} existe; VACUUM puede fallar si opencode esta activo.")
-c = sqlite3.connect(db)
-c.execute("PRAGMA foreign_keys=ON")
-c.execute("VACUUM")
-print("  VACUUM ok.")
-PY
-}
-
-py_backup() {
-  python3 - "$DB_PATH" "$1" <<'PY'
-import sqlite3, sys, os
-db, dest = sys.argv[1], sys.argv[2]
-src = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-dst = sqlite3.connect(dest)
-src.backup(dst)
-dst.close(); src.close()
-print(f"  Backup listo: {dest} ({os.path.getsize(dest)//(1024*1024)} MB)")
-PY
-}
-
-# ---------- modo --init-list ----------
+# --- --init-list (no interactivo) ---
 if [ "$INIT_LIST" -eq 1 ]; then
+  TSV="$(mktemp)"; trap 'rm -f "$TSV"' EXIT
+  db_list_sessions "$DB_PATH" > "$TSV"
   if [ -e "$KEEP_FILE" ] && [ "$FORCE" -ne 1 ]; then
-    echo "Ya existe $KEEP_FILE (usa --force para sobreescribir)."
+    echo "${YELLOW}${BOLD}⚠${RESET}  Ya existe ${CYAN}$KEEP_FILE${RESET} ${DIM}(usa --force)${RESET}"
     exit 0
   fi
   [ -e "$KEEP_FILE" ] && cp "$KEEP_FILE" "$KEEP_FILE.bak"
-  {
-    echo "# Lista blanca de sesiones de opencode a CONSERVAR."
-    echo "# Una sesion por linea. Las que NO aparezcan aqui se BORRARAN."
-    echo "# Para borrar una sesion, elimina su linea (o comentala con #)."
-    echo "# Formato: <ses_id>   # <fecha> | <directorio> | <titulo>"
-    echo "#"
-    py_list | awk -F'\t' '$5==""{printf "%s\t# %s | %s | %s\n", $1, $4, $3, $2}'
-  } > "$KEEP_FILE"
-  echo "Generado: $KEEP_FILE  ($(grep -cE '^ses_' "$KEEP_FILE") sesiones raiz)"
-  echo "Edita ese archivo: deja SOLO las sesiones que quieras conservar."
+  whitelist_generate "$KEEP_FILE" "$TSV"
+  count="$(whitelist_count_roots_in_file "$KEEP_FILE")"
+  echo "${GREEN}${BOLD}✓${RESET}  Generado: ${CYAN}$KEEP_FILE${RESET} ${DIM}($count sesiones raíz)${RESET}"
+  echo "${BLUE}${SEMIBOLD}→${RESET}  Orden: ${BOLD}más antiguo → más reciente${RESET} | Formato: fecha | id | nombre"
   exit 0
 fi
 
-# ---------- validar lista ----------
-if [ ! -f "$KEEP_FILE" ]; then
-  echo "ERROR: no existe $KEEP_FILE" >&2
-  echo "Genera la lista primero con:  $0 --init-list" >&2
-  exit 1
+# --- --apply (modo directo, borra según keep-sessions.txt) ---
+if [ "$APPLY" -ne 1 ]; then
+  echo "${YELLOW}${BOLD}ℹ${RESET} Modo directo: indica ${CYAN}--apply${RESET} para borrar."
+  echo "${BLUE}→${RESET} Genera primero la lista con ${CYAN}--init-list${RESET} y edita keep-sessions.txt."
+  usage
 fi
 
-TSV="$(mktemp)"
-IDS_DEL="$(mktemp)"
-cleanup() { rm -f "$TSV" "$IDS_DEL"; }
-trap cleanup EXIT
-py_list > "$TSV"
+[ -f "$KEEP_FILE" ] || { echo "${RED}ERROR:${RESET} No existe $KEEP_FILE"; echo "${BLUE}→${RESET} Generalo con --init-list"; exit 1; }
+
+TSV_ALL="$(mktemp)"; trap 'rm -f "${TSV_ALL:-}"' EXIT
+db_list_sessions "$DB_PATH" > "$TSV_ALL"
+total_all=$(wc -l < "$TSV_ALL" | tr -d ' ')
+[ "$total_all" -eq 0 ] && { echo "${YELLOW}Sin sesiones${RESET}"; exit 0; }
 
 declare -A PARENT KEEP
-
 while IFS=$'\t' read -r id _ _ _ parent; do
   [ -z "$id" ] && continue
   PARENT["$id"]="$parent"
-done < "$TSV"
+done < "$TSV_ALL"
 
 while IFS= read -r line; do
   [[ "$line" =~ ^[[:space:]]*# ]] && continue
   [[ "$line" =~ ^[[:space:]]*$ ]] && continue
   read -r id _ <<<"$line"
   [[ "$id" == ses_* ]] || continue
-  if [ -z "${PARENT[$id]+x}" ]; then
-    echo "AVISO: '$id' no existe en la DB (ignorada)." >&2
-    continue
-  fi
-  KEEP["$id"]=1
+  [ -n "${PARENT[$id]+x}" ] && KEEP["$id"]=1
 done < "$KEEP_FILE"
 
-# MODO ESTRICTO: no se conservan ni hijas ni ancestros de lo listado;
-# solo sobreviven las ids listadas literalmente en keep-sessions.txt.
-
-# ---------- calcular a borrar ----------
 DELETE_IDS=()
 for id in "${!PARENT[@]}"; do
   [ -n "${KEEP[$id]:-}" ] || DELETE_IDS+=("$id")
 done
 
-total_all=${#PARENT[@]}
 total_keep=${#KEEP[@]}
 total_del=${#DELETE_IDS[@]}
 
-echo "DB                    : $DB_PATH"
-echo "Sesiones totales (v2) : $total_all"
-echo "A conservar           : $total_keep"
-echo "A borrar              : $total_del"
+menu_clear
+menu_header "RESUMEN - MODO DIRECTO" "Orden: más antiguo → más reciente • Modo estricto"
+echo "  ${DIM}DB:${RESET}        $DB_PATH"
+echo "  ${DIM}Totales:${RESET}   ${BOLD}$total_all${RESET}"
+echo "  ${GREEN}${SEMIBOLD}Conservar:${RESET} ${GREEN}${BOLD}$total_keep${RESET}"
+echo "  ${RED}${SEMIBOLD}Borrar:${RESET}    ${RED}${BOLD}$total_del${RESET}"
 echo
 
 if [ "$total_del" -eq 0 ]; then
-  echo "Nada que borrar."
+  echo "  ${GREEN}${BOLD}✓${RESET} Nada que borrar"
   exit 0
 fi
 
-echo "Sesiones que se borrarian:"
+echo "  ${ORANGE}${SEMIBOLD}SE ELIMINARÁN${RESET} ${DIM}(fecha | id | nombre)${RESET}"
+echo "  ${DIM}────────────────────────────────────────────────────────────────────────────────────────${RESET}"
 for id in "${DELETE_IDS[@]}"; do
-  awk -F'\t' -v want="$id" '$1==want {printf "  %s  %s  %s  %s\n", $3, $4, $1, $2}' "$TSV"
-done
+  grep -F "$id" "$TSV_ALL" | head -1
+done | awk -F'\t' '{printf "    %s%s%s  %s%s%s  %s\n", "'$YELLOW''$DIM'", $4, "'$RESET'", "'$CYAN''$BOLD'", $1, "'$RESET'", $2}'
+echo "  ${DIM}────────────────────────────────────────────────────────────────────────────────────────${RESET}"
 echo
 
-if [ "$APPLY" -ne 1 ]; then
-  echo "MODO SIMULACION (dry-run). Para borrar de verdad: $0 --apply"
-  exit 0
-fi
-
 if [ "$ASSUME_YES" -ne 1 ]; then
-  read -r -p "Esto BORRARA $total_del sesiones de forma permanente. Escribe 'BORRAR' para continuar: " ans
-  [ "$ans" = "BORRAR" ] || { echo "Cancelado."; exit 1; }
+  echo "  ${RED}${BOLD}ATENCIÓN:${RESET} Se borrarán ${RED}${BOLD}$total_del${RESET} sesiones permanentemente"
+  read -rp "  Escribe BORRAR para confirmar: " ans
+  [ "$ans" = "BORRAR" ] || { echo "  ${DIM}Cancelado${RESET}"; exit 1; }
 fi
 
 if [ "$DO_BACKUP" -eq 1 ]; then
-  BK_DIR="$SCRIPT_DIR/backups/$(date +%Y%m%d-%H%M%S)"
-  mkdir -p "$BK_DIR"
-  echo "Copia de seguridad (consistente, sqlite backup API)..."
-  py_backup "$DB_PATH" "$BK_DIR/opencode.db"
+  BK_DIR="$SCRIPT_DIR/backups"
+  echo "  ${BLUE}${SEMIBOLD}→${RESET} Creando backup..."
+  bkp=$(db_backup_create "$DB_PATH" "$BK_DIR")
+  echo "  ${GREEN}${BOLD}✓${RESET} Guardado en ${CYAN}$bkp${RESET}"
 fi
 
-printf '%s\n' "${DELETE_IDS[@]}" > "$IDS_DEL"
-echo "Borrando..."
-py_delete "$IDS_DEL"
-
-if [ "$DO_VACUUM" -eq 1 ]; then
-  echo "Compactando DB (VACUUM)..."
-  py_vacuum || echo "  VACUUM fallo (normal si hay opencode activo)." >&2
-fi
-
-echo "Listo. Objetivo: conservar $total_keep sesiones."
+TSV_DEL="$(mktemp)"
+printf '%s\n' "${DELETE_IDS[@]}" > "$TSV_DEL"
+echo "  ${ORANGE}${SEMIBOLD}→${RESET} Borrando..."
+res=$(db_delete_sessions "$DB_PATH" "$TSV_DEL")
+IFS=$'\t' read -r n_v2 n_lg resto <<<"$res"
+echo "  ${GREEN}${BOLD}✓${RESET} Borradas: $n_v2 (v2) / $n_lg (legado) • Quedan: $resto"
+[ "$DO_VACUUM" -eq 1 ] && { echo "  ${BLUE}${SEMIBOLD}→${RESET} VACUUM..."; db_vacuum "$DB_PATH" 2>&1 || true; }
+rm -f "$TSV_DEL"
+echo
+echo "  ${GREEN}${BOLD}✓${RESET} Completado • Conservadas: ${GREEN}${BOLD}$total_keep${RESET}"

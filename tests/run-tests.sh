@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # tests/run-tests.sh
-# Pruebas de cleanup-sessions.sh contra una base de datos de EJEMPLO.
+# Pruebas de start.sh contra una base de datos de EJEMPLO.
 # No toca tu base real: crea un entorno temporal y un 'opencode' falso en PATH.
 #
 # Uso: ./tests/run-tests.sh
@@ -9,7 +9,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT="$ROOT/cleanup-sessions.sh"
+SCRIPT="$ROOT/start.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

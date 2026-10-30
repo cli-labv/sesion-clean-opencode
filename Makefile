@@ -10,9 +10,9 @@ test:
 	./tests/run-tests.sh
 
 lint:
-	bash -n cleanup-sessions.sh tests/run-tests.sh
+	bash -n start.sh tests/run-tests.sh
 	@if command -v shellcheck >/dev/null 2>&1; then \
-		shellcheck -S warning cleanup-sessions.sh tests/run-tests.sh; \
+		shellcheck -S warning start.sh tests/run-tests.sh; \
 	else \
 		echo "shellcheck no instalado: se omite (apt install shellcheck)"; \
 	fi

@@ -23,21 +23,42 @@ cp keep-sessions.example.txt keep-sessions.txt
 
 ## Uso
 
+### Flujo interactivo (menú al iniciar)
+
 ```bash
-# 1. Genera keep-sessions.txt con TODAS las sesiones raiz
+# 1. Abre el menú principal
+./start.sh
+
+# 2. Elige una opción del menú:
+#    - VER todas las sesiones
+#    - BORRAR: borrado rápido usando keep-sessions.txt (modo estricto)
+#    - SELECCIONAR qué conservar / eliminar (multi-marca con ESPACIO)
+#    - INIT: generar keep-sessions.txt
+#    - SALIR
+
+# 3. Desde el menú, genera la lista si no existe:
+#    elige INIT -> edita keep-sessions.txt -> elige BORRAR
+
+# 4. Confirma el borrado (escribe BORRAR) o cancela
+```
+
+### Flujo directo (sin menú, para scripts/CI)
+
+```bash
+# 1. Genera keep-sessions.txt con TODAS las sesiones raíz
 ./cleanup-sessions.sh --init-list
 
 # 2. Edita keep-sessions.txt y deja SOLO las que quieras conservar
 $EDITOR keep-sessions.txt
 
-# 3. Simulacion: muestra que se borraria, sin tocar nada
-./cleanup-sessions.sh
-
-# 4. Borrar (pide escribir BORRAR para confirmar)
+# 3. Borrar (pide escribir BORRAR para confirmar)
 ./cleanup-sessions.sh --apply
 
-# 5. Borrar sin preguntar (para scripts)
+# 4. Borrar sin preguntar (para scripts)
 ./cleanup-sessions.sh --apply --yes
+
+# 5. Compactar la DB tras borrar
+./cleanup-sessions.sh --apply --vacuum
 ```
 
 ### Opciones
@@ -79,11 +100,12 @@ idempotencia. Nunca tocan `~/.local/share/opencode/`.
 ## Estructura
 
 ```
-cleanup-sessions.sh          script principal
-keep-sessions.example.txt    plantilla de lista blanca
-tests/run-tests.sh           tests contra una DB de ejemplo
-.github/workflows/ci.yml     CI: bash -n + ShellCheck + tests
-Makefile                     make test / lint / check / clean
+start.sh                    menú principal interactivo (punto de inicio)
+cleanup-sessions.sh         modo directo/no interactivo (aplicar borrado)
+keep-sessions.example.txt   plantilla de lista blanca
+tests/run-tests.sh          tests contra una DB de ejemplo
+.github/workflows/ci.yml    CI: bash -n + ShellCheck + tests
+Makefile                    make test / lint / check / clean
 ```
 
 ## Seguridad
